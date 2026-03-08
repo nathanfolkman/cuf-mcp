@@ -178,6 +178,103 @@ async def get_prescription(download_url: str) -> str:
     return str(path)
 
 
+# ── Prescription parsing ──────────────────────────────────────────────────────
+
+def _build_prompt(text: str) -> str:
+    return f"""You are a medical data extraction assistant. Extract the key fields from the following Portuguese prescription text and return ONLY valid JSON (no markdown, no explanation).
+
+Use this exact schema:
+{{
+  "patient": "string",
+  "date": "YYYY-MM-DD",
+  "doctor": "string",
+  "specialty": "string",
+  "medications": [
+    {{
+      "name": "string",
+      "dci": "string",
+      "strength": "string",
+      "form": "string",
+      "quantity": "string",
+      "posology": "string",
+      "duration": "string"
+    }}
+  ],
+  "prescription_number": "string",
+  "notes": "string"
+}}
+
+Use null for missing fields. The text may be in Portuguese — handle it correctly.
+
+PRESCRIPTION TEXT:
+{text}"""
+
+
+async def _parse_prescription_vision(file_path: str, model: str) -> dict:
+    import fitz  # pymupdf
+    import ollama, json, re, base64
+
+    doc = fitz.open(file_path)
+    images = []
+    for page in doc:
+        pix = page.get_pixmap(dpi=150)
+        images.append(base64.b64encode(pix.tobytes("png")).decode())
+    doc.close()
+
+    if not images:
+        return {"error": "Could not render PDF pages as images"}
+
+    prompt = _build_prompt("[image-based prescription — extract from the image]")
+    response = ollama.chat(
+        model=model,
+        messages=[{
+            "role": "user",
+            "content": prompt,
+            "images": images,
+        }],
+    )
+    raw = response["message"]["content"]
+    match = re.search(r'\{.*\}', raw, re.DOTALL)
+    if not match:
+        return {"error": "No JSON in model response", "raw": raw}
+    return json.loads(match.group())
+
+
+@mcp.tool()
+async def parse_prescription(file_path: str, model: str = "llama3.2") -> dict:
+    """Parse a downloaded prescription PDF with a local Ollama model.
+
+    Extracts text from the PDF and sends it to a local Ollama model for structured
+    extraction. Falls back to vision-mode (image rendering) for image-based PDFs.
+
+    Args:
+        file_path: Path to the prescription PDF (from get_prescription).
+        model: Ollama model ID to use (default: "llama3.2"; use a vision model like
+               "llava" if the PDF is image-based).
+
+    Returns structured dict with: patient, date, doctor, specialty, medications
+    (list with name/dci/strength/form/quantity/posology/duration), prescription_number, notes.
+    """
+    import pdfplumber, ollama, json, re
+
+    text = ""
+    with pdfplumber.open(file_path) as pdf:
+        for page in pdf.pages:
+            text += page.extract_text() or ""
+
+    if len(text.strip()) < 50:
+        return await _parse_prescription_vision(file_path, model)
+
+    prompt = _build_prompt(text)
+    response = ollama.chat(model=model, messages=[{"role": "user", "content": prompt}])
+    raw = response["message"]["content"]
+
+    match = re.search(r'\{.*\}', raw, re.DOTALL)
+    if not match:
+        return {"error": "No JSON in model response", "raw": raw}
+    return json.loads(match.group())
+
+
 # ── Notifications ─────────────────────────────────────────────────────────────
 
 @mcp.tool()

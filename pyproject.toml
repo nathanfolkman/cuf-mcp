@@ -8,6 +8,9 @@ dependencies = [
     "playwright>=1.40.0",
     "python-dotenv>=1.0.0",
     "httpx>=0.27.0",
+    "pdfplumber>=0.11.0",
+    "ollama>=0.3.0",
+    "pymupdf>=1.24.0",
 ]
 
 [project.scripts]
